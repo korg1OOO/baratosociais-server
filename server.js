@@ -9,17 +9,45 @@ app.use(express.json());
 // Store orders (in-memory for simplicity; use a database in production)
 const orders = new Map(); // Map<transactionId, Order>
 
-// DuckFy API credentials (move to environment variables in production)
-const DUCKFY_API_BASE_URL = 'https://app.duckfy.com.br/api/v1';
-const DUCKFY_PUBLIC_KEY = 'latelieronline01_ge7s6u5s5wi2rvgw';
-const DUCKFY_SECRET_KEY = 't4mubgfc587z4kunu28olwlq5qp8xf14j6zmwftd4vw9skjdia2l46hbcj1lscze';
+// Node-compatible apiClient
+const apiClient = {
+  addOrder: async (serviceId, link, quantity) => {
+    try {
+      const response = await axios.post(
+        'https://app.duckfy.com.br/api/v1/orders', // Adjust endpoint if needed
+        { serviceId, link, quantity },
+        {
+          headers: {
+            'x-public-key': process.env.DUCKFY_PUBLIC_KEY,
+            'x-secret-key': process.env.DUCKFY_SECRET_KEY,
+          },
+        }
+      );
+      return response.data;
+    } catch (error) {
+      throw new Error(`Failed to add order: ${error.message}`);
+    }
+  },
+  // Add other methods if needed (getOrderStatus, createRefill, cancelOrder, getBalance)
+};
+
+// Replicate order.ts functionality
+const placeOrder = async (serviceId, link, quantity) => {
+  try {
+    const response = await apiClient.addOrder(serviceId, link, quantity);
+    return response.order;
+  } catch (error) {
+    console.error('Failed to place order:', error);
+    throw new Error('Order placement failed');
+  }
+};
 
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
     const { event, token, transaction } = req.body;
 
-    // Validate token (replace with your stored token from DuckFy dashboard)
+    // Validate token
     const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
     if (!token || token !== WEBHOOK_TOKEN) {
       return res.status(401).send('Invalid token');
@@ -38,21 +66,7 @@ app.post('/webhook', async (req, res) => {
           const apiOrderIds = await Promise.all(
             order.items.map(async (item) => {
               if (item.service.apiServiceId) {
-                const response = await axios.post(
-                  `${DUCKFY_API_BASE_URL}/orders`, // Adjust endpoint if needed
-                  {
-                    serviceId: item.service.apiServiceId,
-                    link: item.link,
-                    quantity: item.quantity * 1000, // Convert to actual units
-                  },
-                  {
-                    headers: {
-                      'x-public-key': DUCKFY_PUBLIC_KEY,
-                      'x-secret-key': DUCKFY_SECRET_KEY,
-                    },
-                  }
-                );
-                return response.data.order;
+                return await placeOrder(item.service.apiServiceId, item.link, item.quantity * 1000); // Convert to actual units
               }
               return null;
             })
