@@ -38,6 +38,12 @@ if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY || !WEBHOOK_TOKEN) {
   process.exit(1);
 }
 
+// Validate environment variables
+if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY) {
+  console.error('Missing DUCKFY_PUBLIC_KEY or DUCKFY_SECRET_KEY');
+  process.exit(1);
+}
+
 // Node-compatible apiClient for BaratoSociais API
 const apiClient = {
   async makeRequest(params) {
@@ -121,6 +127,20 @@ app.post('/create-pix', async (req, res) => {
       }
     }
 
+    // Validate customer fields
+    if (!customer.name || !customer.email || !customer.phone || !customer.socialHandle) {
+      console.error('Invalid customer data:', customer);
+      return res.status(400).send('Missing customer fields');
+    }
+
+    // Validate items
+    for (const item of items) {
+      if (!item.service || !item.service.apiServiceId || !item.service.name || !item.service.price || !item.quantity || !item.link) {
+        console.error('Invalid item data:', item);
+        return res.status(400).send(`Invalid item data for ${item.service?.name || 'unknown'}`);
+      }
+    }
+
     // Create Pix payments for each item
     const pixResponses = await Promise.all(
       items.map(async (item) => {
@@ -199,6 +219,8 @@ app.post('/create-pix', async (req, res) => {
       status: err.response?.status,
     });
     res.status(500).json({ error: 'Failed to create Pix payment', details: err.message });
+    console.error('Failed to create Pix:', err.message, err.response?.data);
+    res.status(500).send('Failed to create Pix payment');
   }
 });
 
