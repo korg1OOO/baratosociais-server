@@ -10,8 +10,11 @@ app.use(express.json());
 // Environment variables
 const API_KEY = 'db532c749a096ccd762b68e151995624';
 const API_URL = process.env.API_URL || 'https://baratosociais.com/api/v2';
+const DUCKFY_API_URL = 'https://app.duckfy.com.br/api/v1';
+const DUCKFY_PUBLIC_KEY = process.env.DUCKFY_PUBLIC_KEY;
+const DUCKFY_SECRET_KEY = process.env.DUCKFY_SECRET_KEY;
 
-// Node-compatible apiClient (based on api.ts)
+// Node-compatible apiClient for BaratoSociais API
 const apiClient = {
   async makeRequest(params) {
     const formData = new FormData();
@@ -57,6 +60,81 @@ const placeOrder = async (serviceId, link, quantity) => {
 
 // Store orders (in-memory for simplicity; use a database in production)
 const orders = new Map(); // Map<transactionId, Order>
+
+// Endpoint to create Pix payments
+app.post('/create-pix', async (req, res) => {
+  try {
+    const { customer, items } = req.body;
+
+    // Validate input
+    if (!customer || !items || !items.length) {
+      return res.status(400).send('Missing customer or items');
+    }
+
+    // Create Pix payments for each item
+    const pixResponses = await Promise.all(
+      items.map(async (item) => {
+        if (!item.service.apiServiceId) {
+          throw new Error(`Serviço ${item.service.name} não suporta API`);
+        }
+        const response = await axios.post(
+          `${DUCKFY_API_URL}/gateway/pix/receive`,
+          {
+            identifier: `order-${Date.now()}-${item.service.id}`,
+            amount: item.service.price * item.quantity, // Price per 1000 units
+            client: {
+              name: customer.name,
+              email: customer.email,
+              phone: customer.phone,
+              document: customer.socialHandle, // CPF/CNPJ
+            },
+            products: [
+              {
+                id: item.service.id,
+                name: item.service.name,
+                quantity: item.quantity, // In thousands
+                price: item.service.price, // Price per 1000 units
+              },
+            ],
+            dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 1 day from now
+            metadata: { orderId: `order-${Date.now()}` },
+            callbackUrl: 'https://baratosociais-server.onrender.com/webhook',
+          },
+          {
+            headers: {
+              'x-public-key': DUCKFY_PUBLIC_KEY,
+              'x-secret-key': DUCKFY_SECRET_KEY,
+            },
+          }
+        );
+
+        const { transactionId, status, pix } = response.data;
+        if (status !== 'OK') {
+          throw new Error(`Falha na transação para ${item.service.name}: ${response.data.errorDescription || 'Erro desconhecido'}`);
+        }
+
+        // Store order
+        const order = {
+          id: Date.now().toString() + '-' + item.service.id,
+          customer,
+          items: [item],
+          total: item.service.price * item.quantity,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+          transactionId,
+        };
+        orders.set(transactionId, order);
+
+        return { transactionId, pix };
+      })
+    );
+
+    res.status(200).json(pixResponses);
+  } catch (err) {
+    console.error('Failed to create Pix:', err);
+    res.status(500).send('Failed to create Pix payment');
+  }
+});
 
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
@@ -108,7 +186,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// API to update orders (called from frontend)
+// API to update orders (for compatibility, if needed)
 app.post('/update-order', (req, res) => {
   const { transactionId, order } = req.body;
   orders.set(transactionId, order);
