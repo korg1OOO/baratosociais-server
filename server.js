@@ -19,10 +19,15 @@ const API_URL = process.env.API_URL || 'https://baratosociais.com/api/v2';
 const DUCKFY_API_URL = 'https://app.duckfy.com.br/api/v1';
 const DUCKFY_PUBLIC_KEY = process.env.DUCKFY_PUBLIC_KEY;
 const DUCKFY_SECRET_KEY = process.env.DUCKFY_SECRET_KEY;
+const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
 
 // Validate environment variables
-if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY) {
-  console.error('Missing DUCKFY_PUBLIC_KEY or DUCKFY_SECRET_KEY');
+if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY || !WEBHOOK_TOKEN) {
+  console.error('Missing environment variables:', {
+    DUCKFY_PUBLIC_KEY: !!DUCKFY_PUBLIC_KEY,
+    DUCKFY_SECRET_KEY: !!DUCKFY_SECRET_KEY,
+    WEBHOOK_TOKEN: !!WEBHOOK_TOKEN,
+  });
   process.exit(1);
 }
 
@@ -44,7 +49,11 @@ const apiClient = {
       }
       return response.data;
     } catch (error) {
-      console.error('BaratoSociais API request failed:', error.message);
+      console.error('BaratoSociais API request failed:', {
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+      });
       throw error;
     }
   },
@@ -65,7 +74,13 @@ const placeOrder = async (serviceId, link, quantity) => {
     const response = await apiClient.addOrder(serviceId, link, quantity);
     return response.order;
   } catch (error) {
-    console.error('Failed to place order:', error.message);
+    console.error('Failed to place order:', {
+      serviceId,
+      link,
+      quantity,
+      error: error.message,
+      response: error.response?.data,
+    });
     throw new Error('Order placement failed');
   }
 };
@@ -78,23 +93,26 @@ app.post('/create-pix', async (req, res) => {
   try {
     const { customer, items } = req.body;
 
+    // Log incoming request
+    console.log('Received /create-pix request:', { customer, items });
+
     // Validate input
-    if (!customer || !items || !items.length) {
+    if (!customer || !items || !Array.isArray(items) || !items.length) {
       console.error('Invalid request payload:', { customer, items });
-      return res.status(400).send('Missing customer or items');
+      return res.status(400).json({ error: 'Missing or invalid customer or items' });
     }
 
     // Validate customer fields
     if (!customer.name || !customer.email || !customer.phone || !customer.socialHandle) {
       console.error('Invalid customer data:', customer);
-      return res.status(400).send('Missing customer fields');
+      return res.status(400).json({ error: 'Missing customer fields', details: customer });
     }
 
     // Validate items
     for (const item of items) {
       if (!item.service || !item.service.apiServiceId || !item.service.name || !item.service.price || !item.quantity || !item.link) {
         console.error('Invalid item data:', item);
-        return res.status(400).send(`Invalid item data for ${item.service?.name || 'unknown'}`);
+        return res.status(400).json({ error: `Invalid item data for ${item.service?.name || 'unknown'}`, details: item });
       }
     }
 
@@ -102,29 +120,33 @@ app.post('/create-pix', async (req, res) => {
     const pixResponses = await Promise.all(
       items.map(async (item) => {
         try {
+          const payload = {
+            identifier: `order-${Date.now()}-${item.service.id}`,
+            amount: item.service.price * item.quantity, // Price per 1000 units
+            client: {
+              name: customer.name,
+              email: customer.email,
+              phone: customer.phone,
+              document: customer.socialHandle, // CPF/CNPJ
+            },
+            products: [
+              {
+                id: item.service.id,
+                name: item.service.name,
+                quantity: item.quantity, // In thousands
+                price: item.service.price, // Price per 1000 units
+              },
+            ],
+            dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 1 day from now
+            metadata: { orderId: `order-${Date.now()}` },
+            callbackUrl: 'https://baratosociais-server.onrender.com/webhook',
+          };
+
+          console.log('Sending DuckFy API request:', payload);
+
           const response = await axios.post(
             `${DUCKFY_API_URL}/gateway/pix/receive`,
-            {
-              identifier: `order-${Date.now()}-${item.service.id}`,
-              amount: item.service.price * item.quantity, // Price per 1000 units
-              client: {
-                name: customer.name,
-                email: customer.email,
-                phone: customer.phone,
-                document: customer.socialHandle, // CPF/CNPJ
-              },
-              products: [
-                {
-                  id: item.service.id,
-                  name: item.service.name,
-                  quantity: item.quantity, // In thousands
-                  price: item.service.price, // Price per 1000 units
-                },
-              ],
-              dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 1 day from now
-              metadata: { orderId: `order-${Date.now()}` },
-              callbackUrl: 'https://baratosociais-server.onrender.com/webhook',
-            },
+            payload,
             {
               headers: {
                 'x-public-key': DUCKFY_PUBLIC_KEY,
@@ -135,7 +157,7 @@ app.post('/create-pix', async (req, res) => {
 
           const { transactionId, status, pix } = response.data;
           if (status !== 'OK') {
-            throw new Error(`Falha na transação para ${item.service.name}: ${response.data.errorDescription || 'Erro desconhecido'}`);
+            throw new Error(`Transaction failed for ${item.service.name}: ${response.data.errorDescription || 'Unknown error'}`);
           }
 
           // Store order
@@ -150,9 +172,15 @@ app.post('/create-pix', async (req, res) => {
           };
           orders.set(transactionId, order);
 
+          console.log('Pix created successfully:', { transactionId, pix });
+
           return { transactionId, pix };
         } catch (err) {
-          console.error(`Failed to create Pix for item ${item.service.name}:`, err.message);
+          console.error(`Failed to create Pix for item ${item.service.name}:`, {
+            error: err.message,
+            response: err.response?.data,
+            status: err.response?.status,
+          });
           throw err;
         }
       })
@@ -160,8 +188,12 @@ app.post('/create-pix', async (req, res) => {
 
     res.status(200).json(pixResponses);
   } catch (err) {
-    console.error('Failed to create Pix:', err.message, err.response?.data);
-    res.status(500).send('Failed to create Pix payment');
+    console.error('Failed to create Pix:', {
+      error: err.message,
+      response: err.response?.data,
+      status: err.response?.status,
+    });
+    res.status(500).json({ error: 'Failed to create Pix payment', details: err.message });
   }
 });
 
@@ -171,10 +203,9 @@ app.post('/webhook', async (req, res) => {
     const { event, token, transaction } = req.body;
 
     // Validate token
-    const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
     if (!token || token !== WEBHOOK_TOKEN) {
       console.error('Invalid webhook token:', token);
-      return res.status(401).send('Invalid token');
+      return res.status(401).json({ error: 'Invalid token' });
     }
 
     if (event === 'TRANSACTION_PAID' && transaction.status === 'COMPLETED') {
@@ -202,7 +233,10 @@ app.post('/webhook', async (req, res) => {
           orders.set(transactionId, order);
           console.log(`Order ${transactionId} completed:`, order);
         } catch (err) {
-          console.error(`Failed to place order for ${transactionId}:`, err.message);
+          console.error(`Failed to place order for ${transactionId}:`, {
+            error: err.message,
+            response: err.response?.data,
+          });
           order.status = 'failed';
           orders.set(transactionId, order);
         }
@@ -213,8 +247,11 @@ app.post('/webhook', async (req, res) => {
 
     res.status(200).send('Webhook received');
   } catch (err) {
-    console.error('Webhook error:', err.message);
-    res.status(500).send('Webhook processing failed');
+    console.error('Webhook error:', {
+      error: err.message,
+      response: err.response?.data,
+    });
+    res.status(500).json({ error: 'Webhook processing failed', details: err.message });
   }
 });
 
@@ -223,6 +260,11 @@ app.post('/update-order', (req, res) => {
   const { transactionId, order } = req.body;
   orders.set(transactionId, order);
   res.status(200).send('Order updated');
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('Server is running');
 });
 
 // Start server
