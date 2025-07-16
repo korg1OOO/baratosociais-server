@@ -38,6 +38,12 @@ if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY || !WEBHOOK_TOKEN) {
   process.exit(1);
 }
 
+// Validate API_URL to avoid path-to-regexp issues
+if (!API_URL.startsWith('https://')) {
+  console.error('Invalid API_URL:', API_URL);
+  process.exit(1);
+}
+
 // Node-compatible apiClient for BaratoSociais API
 const apiClient = {
   async makeRequest(params) {
@@ -59,6 +65,7 @@ const apiClient = {
       console.error('BaratoSociais API request failed:', {
         error: error.message,
         response: error.response?.data,
+        status: error.response?.status,
       });
       throw error;
     }
