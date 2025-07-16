@@ -1,37 +1,49 @@
 const express = require('express');
 const axios = require('axios');
+const FormData = require('form-data');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware to parse JSON bodies
 app.use(express.json());
 
-// Store orders (in-memory for simplicity; use a database in production)
-const orders = new Map(); // Map<transactionId, Order>
+// Node-compatible apiClient (based on api.ts)
+const API_KEY = 'db532c749a096ccd762b68e151995624';
+const API_URL = process.env.API_URL || 'https://your-api-endpoint.com/api'; // Replace with actual API endpoint
 
-// Node-compatible apiClient
 const apiClient = {
-  addOrder: async (serviceId, link, quantity) => {
+  async makeRequest(params) {
+    const formData = new FormData();
+    formData.append('key', API_KEY);
+    Object.entries(params).forEach(([key, value]) => {
+      formData.append(key, value.toString());
+    });
+
     try {
-      const response = await axios.post(
-        'https://app.duckfy.com.br/api/v1/orders', // Adjust endpoint if needed
-        { serviceId, link, quantity },
-        {
-          headers: {
-            'x-public-key': process.env.DUCKFY_PUBLIC_KEY,
-            'x-secret-key': process.env.DUCKFY_SECRET_KEY,
-          },
-        }
-      );
+      const response = await axios.post(API_URL, formData, {
+        headers: formData.getHeaders(),
+      });
+      if (response.status !== 200) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
       return response.data;
     } catch (error) {
-      throw new Error(`Failed to add order: ${error.message}`);
+      console.error('API request failed:', error);
+      throw error;
     }
   },
-  // Add other methods if needed (getOrderStatus, createRefill, cancelOrder, getBalance)
+
+  async addOrder(serviceId, link, quantity) {
+    return this.makeRequest({
+      action: 'add',
+      service: serviceId,
+      link,
+      quantity,
+    });
+  },
 };
 
-// Replicate order.ts functionality
+// Replicate placeOrder from order.ts
 const placeOrder = async (serviceId, link, quantity) => {
   try {
     const response = await apiClient.addOrder(serviceId, link, quantity);
@@ -41,6 +53,9 @@ const placeOrder = async (serviceId, link, quantity) => {
     throw new Error('Order placement failed');
   }
 };
+
+// Store orders (in-memory for simplicity; use a database in production)
+const orders = new Map(); // Map<transactionId, Order>
 
 // Webhook endpoint
 app.post('/webhook', async (req, res) => {
