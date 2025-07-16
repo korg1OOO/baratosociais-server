@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 // Middleware to parse JSON bodies and enable CORS
 app.use(express.json());
 app.use(cors({
-  origin: 'https://baratosociais.vercel.app', // Allow only your frontend
+  origin: 'https://baratosociais.vercel.app',
   methods: ['POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type'],
 }));
@@ -19,6 +19,12 @@ const API_URL = process.env.API_URL || 'https://baratosociais.com/api/v2';
 const DUCKFY_API_URL = 'https://app.duckfy.com.br/api/v1';
 const DUCKFY_PUBLIC_KEY = process.env.DUCKFY_PUBLIC_KEY;
 const DUCKFY_SECRET_KEY = process.env.DUCKFY_SECRET_KEY;
+
+// Validate environment variables
+if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY) {
+  console.error('Missing DUCKFY_PUBLIC_KEY or DUCKFY_SECRET_KEY');
+  process.exit(1);
+}
 
 // Node-compatible apiClient for BaratoSociais API
 const apiClient = {
@@ -38,7 +44,7 @@ const apiClient = {
       }
       return response.data;
     } catch (error) {
-      console.error('API request failed:', error);
+      console.error('BaratoSociais API request failed:', error.message);
       throw error;
     }
   },
@@ -59,7 +65,7 @@ const placeOrder = async (serviceId, link, quantity) => {
     const response = await apiClient.addOrder(serviceId, link, quantity);
     return response.order;
   } catch (error) {
-    console.error('Failed to place order:', error);
+    console.error('Failed to place order:', error.message);
     throw new Error('Order placement failed');
   }
 };
@@ -74,70 +80,87 @@ app.post('/create-pix', async (req, res) => {
 
     // Validate input
     if (!customer || !items || !items.length) {
+      console.error('Invalid request payload:', { customer, items });
       return res.status(400).send('Missing customer or items');
+    }
+
+    // Validate customer fields
+    if (!customer.name || !customer.email || !customer.phone || !customer.socialHandle) {
+      console.error('Invalid customer data:', customer);
+      return res.status(400).send('Missing customer fields');
+    }
+
+    // Validate items
+    for (const item of items) {
+      if (!item.service || !item.service.apiServiceId || !item.service.name || !item.service.price || !item.quantity || !item.link) {
+        console.error('Invalid item data:', item);
+        return res.status(400).send(`Invalid item data for ${item.service?.name || 'unknown'}`);
+      }
     }
 
     // Create Pix payments for each item
     const pixResponses = await Promise.all(
       items.map(async (item) => {
-        if (!item.service.apiServiceId) {
-          throw new Error(`Serviço ${item.service.name} não suporta API`);
-        }
-        const response = await axios.post(
-          `${DUCKFY_API_URL}/gateway/pix/receive`,
-          {
-            identifier: `order-${Date.now()}-${item.service.id}`,
-            amount: item.service.price * item.quantity, // Price per 1000 units
-            client: {
-              name: customer.name,
-              email: customer.email,
-              phone: customer.phone,
-              document: customer.socialHandle, // CPF/CNPJ
-            },
-            products: [
-              {
-                id: item.service.id,
-                name: item.service.name,
-                quantity: item.quantity, // In thousands
-                price: item.service.price, // Price per 1000 units
+        try {
+          const response = await axios.post(
+            `${DUCKFY_API_URL}/gateway/pix/receive`,
+            {
+              identifier: `order-${Date.now()}-${item.service.id}`,
+              amount: item.service.price * item.quantity, // Price per 1000 units
+              client: {
+                name: customer.name,
+                email: customer.email,
+                phone: customer.phone,
+                document: customer.socialHandle, // CPF/CNPJ
               },
-            ],
-            dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 1 day from now
-            metadata: { orderId: `order-${Date.now()}` },
-            callbackUrl: 'https://baratosociais-server.onrender.com/webhook',
-          },
-          {
-            headers: {
-              'x-public-key': DUCKFY_PUBLIC_KEY,
-              'x-secret-key': DUCKFY_SECRET_KEY,
+              products: [
+                {
+                  id: item.service.id,
+                  name: item.service.name,
+                  quantity: item.quantity, // In thousands
+                  price: item.service.price, // Price per 1000 units
+                },
+              ],
+              dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 1 day from now
+              metadata: { orderId: `order-${Date.now()}` },
+              callbackUrl: 'https://baratosociais-server.onrender.com/webhook',
             },
+            {
+              headers: {
+                'x-public-key': DUCKFY_PUBLIC_KEY,
+                'x-secret-key': DUCKFY_SECRET_KEY,
+              },
+            }
+          );
+
+          const { transactionId, status, pix } = response.data;
+          if (status !== 'OK') {
+            throw new Error(`Falha na transação para ${item.service.name}: ${response.data.errorDescription || 'Erro desconhecido'}`);
           }
-        );
 
-        const { transactionId, status, pix } = response.data;
-        if (status !== 'OK') {
-          throw new Error(`Falha na transação para ${item.service.name}: ${response.data.errorDescription || 'Erro desconhecido'}`);
+          // Store order
+          const order = {
+            id: Date.now().toString() + '-' + item.service.id,
+            customer,
+            items: [item],
+            total: item.service.price * item.quantity,
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            transactionId,
+          };
+          orders.set(transactionId, order);
+
+          return { transactionId, pix };
+        } catch (err) {
+          console.error(`Failed to create Pix for item ${item.service.name}:`, err.message);
+          throw err;
         }
-
-        // Store order
-        const order = {
-          id: Date.now().toString() + '-' + item.service.id,
-          customer,
-          items: [item],
-          total: item.service.price * item.quantity,
-          status: 'pending',
-          createdAt: new Date().toISOString(),
-          transactionId,
-        };
-        orders.set(transactionId, order);
-
-        return { transactionId, pix };
       })
     );
 
     res.status(200).json(pixResponses);
   } catch (err) {
-    console.error('Failed to create Pix:', err);
+    console.error('Failed to create Pix:', err.message, err.response?.data);
     res.status(500).send('Failed to create Pix payment');
   }
 });
@@ -150,6 +173,7 @@ app.post('/webhook', async (req, res) => {
     // Validate token
     const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
     if (!token || token !== WEBHOOK_TOKEN) {
+      console.error('Invalid webhook token:', token);
       return res.status(401).send('Invalid token');
     }
 
@@ -178,16 +202,18 @@ app.post('/webhook', async (req, res) => {
           orders.set(transactionId, order);
           console.log(`Order ${transactionId} completed:`, order);
         } catch (err) {
-          console.error(`Failed to place order for ${transactionId}:`, err);
+          console.error(`Failed to place order for ${transactionId}:`, err.message);
           order.status = 'failed';
           orders.set(transactionId, order);
         }
+      } else {
+        console.error(`Order not found for transactionId: ${transactionId}`);
       }
     }
 
     res.status(200).send('Webhook received');
   } catch (err) {
-    console.error('Webhook error:', err);
+    console.error('Webhook error:', err.message);
     res.status(500).send('Webhook processing failed');
   }
 });
