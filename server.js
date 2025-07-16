@@ -6,11 +6,18 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware to parse JSON bodies and enable CORS
-app.use(express.json());
 app.use(cors({
   origin: 'https://baratosociais.vercel.app',
-  methods: ['POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-public-key', 'x-secret-key'],
+}));
+app.use(express.json());
+
+// Explicitly handle OPTIONS requests
+app.options('*', cors({
+  origin: 'https://baratosociais.vercel.app',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-public-key', 'x-secret-key'],
 }));
 
 // Environment variables
@@ -19,10 +26,15 @@ const API_URL = process.env.API_URL || 'https://baratosociais.com/api/v2';
 const DUCKFY_API_URL = 'https://app.duckfy.com.br/api/v1';
 const DUCKFY_PUBLIC_KEY = process.env.DUCKFY_PUBLIC_KEY;
 const DUCKFY_SECRET_KEY = process.env.DUCKFY_SECRET_KEY;
+const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
 
 // Validate environment variables
-if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY) {
-  console.error('Missing DUCKFY_PUBLIC_KEY or DUCKFY_SECRET_KEY');
+if (!DUCKFY_PUBLIC_KEY || !DUCKFY_SECRET_KEY || !WEBHOOK_TOKEN) {
+  console.error('Missing environment variables:', {
+    DUCKFY_PUBLIC_KEY: !!DUCKFY_PUBLIC_KEY,
+    DUCKFY_SECRET_KEY: !!DUCKFY_SECRET_KEY,
+    WEBHOOK_TOKEN: !!WEBHOOK_TOKEN,
+  });
   process.exit(1);
 }
 
@@ -44,7 +56,10 @@ const apiClient = {
       }
       return response.data;
     } catch (error) {
-      console.error('BaratoSociais API request failed:', error.message);
+      console.error('BaratoSociais API request failed:', {
+        error: error.message,
+        response: error.response?.data,
+      });
       throw error;
     }
   },
@@ -65,7 +80,12 @@ const placeOrder = async (serviceId, link, quantity) => {
     const response = await apiClient.addOrder(serviceId, link, quantity);
     return response.order;
   } catch (error) {
-    console.error('Failed to place order:', error.message);
+    console.error('Failed to place order:', {
+      serviceId,
+      link,
+      quantity,
+      error: error.message,
+    });
     throw new Error('Order placement failed');
   }
 };
@@ -152,7 +172,10 @@ app.post('/create-pix', async (req, res) => {
 
           return { transactionId, pix };
         } catch (err) {
-          console.error(`Failed to create Pix for item ${item.service.name}:`, err.message);
+          console.error(`Failed to create Pix for item ${item.service.name}:`, {
+            error: err.message,
+            response: err.response?.data,
+          });
           throw err;
         }
       })
@@ -160,7 +183,10 @@ app.post('/create-pix', async (req, res) => {
 
     res.status(200).json(pixResponses);
   } catch (err) {
-    console.error('Failed to create Pix:', err.message, err.response?.data);
+    console.error('Failed to create Pix:', {
+      error: err.message,
+      response: err.response?.data,
+    });
     res.status(500).send('Failed to create Pix payment');
   }
 });
@@ -171,7 +197,6 @@ app.post('/webhook', async (req, res) => {
     const { event, token, transaction } = req.body;
 
     // Validate token
-    const WEBHOOK_TOKEN = process.env.WEBHOOK_TOKEN;
     if (!token || token !== WEBHOOK_TOKEN) {
       console.error('Invalid webhook token:', token);
       return res.status(401).send('Invalid token');
@@ -202,7 +227,9 @@ app.post('/webhook', async (req, res) => {
           orders.set(transactionId, order);
           console.log(`Order ${transactionId} completed:`, order);
         } catch (err) {
-          console.error(`Failed to place order for ${transactionId}:`, err.message);
+          console.error(`Failed to place order for ${transactionId}:`, {
+            error: err.message,
+          });
           order.status = 'failed';
           orders.set(transactionId, order);
         }
@@ -213,7 +240,9 @@ app.post('/webhook', async (req, res) => {
 
     res.status(200).send('Webhook received');
   } catch (err) {
-    console.error('Webhook error:', err.message);
+    console.error('Webhook error:', {
+      error: err.message,
+    });
     res.status(500).send('Webhook processing failed');
   }
 });
@@ -223,6 +252,11 @@ app.post('/update-order', (req, res) => {
   const { transactionId, order } = req.body;
   orders.set(transactionId, order);
   res.status(200).send('Order updated');
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('Server is running');
 });
 
 // Start server
