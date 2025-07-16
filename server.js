@@ -7,10 +7,11 @@ const PORT = process.env.PORT || 3000;
 // Middleware to parse JSON bodies
 app.use(express.json());
 
-// Node-compatible apiClient (based on api.ts)
+// Environment variables
 const API_KEY = 'db532c749a096ccd762b68e151995624';
-const API_URL = process.env.API_URL || 'https://your-api-endpoint.com/api'; // Replace with actual API endpoint
+const API_URL = process.env.API_URL || 'https://baratosociais.com/api/v2';
 
+// Node-compatible apiClient (based on api.ts)
 const apiClient = {
   async makeRequest(params) {
     const formData = new FormData();
