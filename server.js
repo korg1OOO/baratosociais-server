@@ -1,11 +1,17 @@
 const express = require('express');
 const axios = require('axios');
 const FormData = require('form-data');
+const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware to parse JSON bodies
+// Middleware to parse JSON bodies and enable CORS
 app.use(express.json());
+app.use(cors({
+  origin: 'https://baratosociais.vercel.app', // Allow only your frontend
+  methods: ['POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type'],
+}));
 
 // Environment variables
 const API_KEY = 'db532c749a096ccd762b68e151995624';
