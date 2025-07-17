@@ -88,6 +88,9 @@ const placeOrder = async (serviceId, link, quantity) => {
 // Store orders (in-memory for simplicity; use a database in production)
 const orders = new Map(); // Map<transactionId, Order>
 
+// Minimum price per item (in reais)
+const MINIMUM_PRICE = 1.50;
+
 // Endpoint to create Pix payments
 app.post('/create-pix', async (req, res) => {
   try {
@@ -120,9 +123,13 @@ app.post('/create-pix', async (req, res) => {
     const pixResponses = await Promise.all(
       items.map(async (item) => {
         try {
+          // Enforce minimum price
+          const adjustedPrice = Math.max(item.service.price, MINIMUM_PRICE);
+          const amount = adjustedPrice * item.quantity;
+
           const payload = {
             identifier: `order-${Date.now()}-${item.service.id}`,
-            amount: item.service.price * item.quantity, // Price per 1000 units
+            amount, // Use adjusted price
             client: {
               name: customer.name,
               email: customer.email,
@@ -134,7 +141,7 @@ app.post('/create-pix', async (req, res) => {
                 id: item.service.id,
                 name: item.service.name,
                 quantity: item.quantity, // In thousands
-                price: item.service.price, // Price per 1000 units
+                price: adjustedPrice, // Use adjusted price
               },
             ],
             dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 1 day from now
@@ -163,12 +170,12 @@ app.post('/create-pix', async (req, res) => {
             throw new Error(`Transaction failed for ${item.service.name}: ${response.data.errorDescription || 'Unknown error'}`);
           }
 
-          // Store order
+          // Store order with adjusted price
           const order = {
             id: Date.now().toString() + '-' + item.service.id,
             customer,
-            items: [item],
-            total: item.service.price * item.quantity,
+            items: [{ ...item, service: { ...item.service, price: adjustedPrice } }], // Store adjusted price
+            total: amount,
             status: 'pending',
             createdAt: new Date().toISOString(),
             transactionId,
