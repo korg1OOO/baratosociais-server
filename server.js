@@ -155,6 +155,9 @@ app.post('/create-pix', async (req, res) => {
             }
           );
 
+          console.log('DuckFy API response:', response.data);
+
+          // Map DuckFy response to expected format
           const { transactionId, status, pix } = response.data;
           if (status !== 'OK') {
             throw new Error(`Transaction failed for ${item.service.name}: ${response.data.errorDescription || 'Unknown error'}`);
@@ -174,7 +177,7 @@ app.post('/create-pix', async (req, res) => {
 
           console.log('Pix created successfully:', { transactionId, pix });
 
-          return { transactionId, pix };
+          return { transactionId, pix: { base64: pix.base64 }, pixString: pix.code };
         } catch (err) {
           console.error(`Failed to create Pix for item ${item.service.name}:`, {
             error: err.message,
