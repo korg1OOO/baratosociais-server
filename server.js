@@ -166,7 +166,8 @@ app.post('/create-pix', async (req, res) => {
 
           // Map DuckFy response to expected format
           const { transactionId, status, pix } = response.data;
-          if (status !== 'OK') {
+          // Updated check: Validate against 'PENDING' (observed success status) and presence of pix details
+          if (status !== 'PENDING' || !pix || !pix.code || !pix.base64) {
             throw new Error(`Transaction failed for ${item.service.name}: ${response.data.errorDescription || 'Unknown error'}`);
           }
 
